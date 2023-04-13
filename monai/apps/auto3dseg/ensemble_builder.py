@@ -165,7 +165,7 @@ class AlgoEnsemble(ABC):
         sigmoid = param.pop("sigmoid", False)
 
         outputs = []
-        for i, file in enumerate(tqdm(files, desc='Ensembling...')) if pred_param.get('rank',0)==0 else enumerate(files):
+        for i, file in enumerate(tqdm(files, desc='Ensembling (rank 0)...')) if pred_param.get('rank',0)==0 else enumerate(files):
             preds = []
             for algo in self.algo_ensemble:
                 infer_instance = algo[AlgoKeys.ALGO]
@@ -347,7 +347,7 @@ class EnsembleRunner:
         ensemble_method_name: method to ensemble predictions from different model.
                               Suported methods: ["AlgoEnsembleBestN", "AlgoEnsembleBestByFold"].
         mgpu: if using multi-gpu.
-        kwargs: additional image writing, ensembling parameters and prediction parameters for the ensemble inference
+        kwargs: additional image writing, ensembling parameters and prediction parameters for the ensemble inference.
     Examples:
 
         .. code-block:: python
@@ -367,47 +367,12 @@ class EnsembleRunner:
                  ensemble_method_name: str='AlgoEnsembleBestByFold',
                  mgpu: bool=True,
                  **kwargs):
-        self.mgpu = mgpu
-        self.rank = 0
-        self.world_size = 1
-        if self.mgpu: # torch.cuda.device_count() is not used because env is not set by autorruner
-            # init multiprocessing and update infer_files
-            dist.init_process_group(backend="nccl", init_method="env://")
-            self.world_size = dist.get_world_size()
-            self.rank = dist.get_rank()
         self.data_src_cfg_name = data_src_cfg_name
         self.work_dir = work_dir
-        self.set_num_fold(num_fold=num_fold)
+        self.num_fold = num_fold
         self.ensemble_method_name = ensemble_method_name
-        self.save_image = self.set_image_save_transform(kwargs)
-        self.set_ensemble_method(ensemble_method_name)
-        self.pred_params = kwargs
-        history = import_bundle_algo_history(self.work_dir, only_trained=False)
-        history_untrained = [h for h in history if not h[AlgoKeys.IS_TRAINED]]
-        if len(history_untrained) > 0:
-            if self.rank == 0:
-                warnings.warn(
-                    f"Ensembling step will skip {[h['name'] for h in history_untrained]} untrained algos."
-                    "Generally it means these algos did not complete training."
-                )
-            history = [h for h in history if h[AlgoKeys.IS_TRAINED]]
-        if len(history) == 0:
-            raise ValueError(
-                f"Could not find the trained results in {self.work_dir}. "
-                "Possibly the required training step was not completed."
-            )
-
-        builder = AlgoEnsembleBuilder(history, data_src_cfg_name)
-        builder.set_ensemble_method(self.ensemble_method)
-        self.ensembler = builder.get_ensemble()
-        infer_files = self.ensembler.infer_files
-        infer_files = partition_dataset(
-            data=infer_files,
-            shuffle=False,
-            num_partitions=self.world_size,
-        )[self.rank]
-        # TO DO: Add some function in ensembler for infer_files update?
-        self.ensembler.infer_files = infer_files
+        self.mgpu = mgpu
+        self.kwargs = kwargs
 
     def set_ensemble_method(self, ensemble_method_name: str = "AlgoEnsembleBestByFold", **kwargs: Any) -> None:
         """
@@ -476,7 +441,44 @@ class EnsembleRunner:
         self.num_fold = num_fold
 
     def ensemble(self):
-        preds = self.ensembler(pred_param=self.pred_params)
+        if self.mgpu: # torch.cuda.device_count() is not used because env is not set by autorruner
+            # init multiprocessing and update infer_files
+            dist.init_process_group(backend="nccl", init_method="env://")
+            self.world_size = dist.get_world_size()
+            self.rank = dist.get_rank()
+        # set params after init_process_group to know the rank
+        self.set_num_fold(num_fold=self.num_fold)
+        self.save_image = self.set_image_save_transform(self.kwargs)
+        self.set_ensemble_method(self.ensemble_method_name)
+        
+        history = import_bundle_algo_history(self.work_dir, only_trained=False)
+        history_untrained = [h for h in history if not h[AlgoKeys.IS_TRAINED]]
+        if len(history_untrained) > 0:
+            if self.rank == 0:
+                warnings.warn(
+                    f"Ensembling step will skip {[h['name'] for h in history_untrained]} untrained algos."
+                    "Generally it means these algos did not complete training."
+                )
+            history = [h for h in history if h[AlgoKeys.IS_TRAINED]]
+        if len(history) == 0:
+            raise ValueError(
+                f"Could not find the trained results in {self.work_dir}. "
+                "Possibly the required training step was not completed."
+            )
+
+        builder = AlgoEnsembleBuilder(history, self.data_src_cfg_name)
+        builder.set_ensemble_method(self.ensemble_method)
+        self.ensembler = builder.get_ensemble()
+        infer_files = self.ensembler.infer_files
+        infer_files = partition_dataset(
+            data=infer_files,
+            shuffle=False,
+            num_partitions=self.world_size,
+        )[self.rank]
+        # TO DO: Add some function in ensembler for infer_files update?
+        self.ensembler.infer_files = infer_files
+        # self.kwargs has poped out args for set_image_save_transform
+        preds = self.ensembler(pred_param=self.kwargs)
 
         if len(preds) > 0:
             if self.rank == 0:
@@ -521,8 +523,8 @@ class EnsembleRunner:
                     --ensemble_method_name {self.ensemble_method_name} \
                     --mgpu True"
 
-            if self.pred_params and isinstance(self.pred_params, Mapping):
-                for k, v in self.pred_params.items():
+            if self.kwargs and isinstance(self.kwargs, Mapping):
+                for k, v in self.kwargs.items():
                     base_cmd += f" --{k}={v}"
             # define env for subprocess
             ps_environ = os.environ.copy()
