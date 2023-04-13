@@ -126,7 +126,7 @@ class AlgoEnsemble(ABC):
             else:
                 return VoteEnsemble(num_classes=preds[0].shape[0])(classes)
 
-    def __call__(self, **pred_param: Any) -> list[torch.Tensor]:
+    def __call__(self, pred_param: dict | None = None) -> list[torch.Tensor]:
         """
         Use the ensembled model to predict result.
 
@@ -373,6 +373,8 @@ class EnsembleRunner:
         self.ensemble_method_name = ensemble_method_name
         self.mgpu = mgpu
         self.kwargs = kwargs
+        self.rank = 0
+        self.world_size = 1
 
     def set_ensemble_method(self, ensemble_method_name: str = "AlgoEnsembleBestByFold", **kwargs: Any) -> None:
         """
@@ -478,6 +480,8 @@ class EnsembleRunner:
         # TO DO: Add some function in ensembler for infer_files update?
         self.ensembler.infer_files = infer_files
         # self.kwargs has poped out args for set_image_save_transform
+        # add rank to pred_params
+        self.kwargs['rank'] = self.rank
         preds = self.ensembler(pred_param=self.kwargs)
 
         if len(preds) > 0:
