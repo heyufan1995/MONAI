@@ -140,8 +140,7 @@ class VistaPostTransformd(MapTransform):
         super().__init__(keys, allow_missing_keys)
 
     def __call__(self, data):
-        """ data["label_prompt"] should not contain 0
-        """
+        """data["label_prompt"] should not contain 0"""
         for keys in self.keys:
             if keys in data:
                 pred = data[keys]
@@ -166,9 +165,10 @@ class VistaPostTransformd(MapTransform):
                     pred[pred > 0] = 1.0
                 if "label_prompt" in data and data["label_prompt"] is not None:
                     pred += 0.5  # inplace mapping to avoid cloning pred
+                    label_prompt = data["label_prompt"].to(device)  # Ensure label_prompt is on the same device
                     for i in range(1, object_num + 1):
                         frac = i + 0.5
-                        pred[pred == frac] = data["label_prompt"][i - 1].to(pred.dtype)
+                        pred[pred == frac] = label_prompt[i - 1].to(pred.dtype)
                     pred[pred == 0.5] = 0.0
                 data[keys] = pred
         return data
